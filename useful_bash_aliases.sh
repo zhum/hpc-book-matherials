@@ -10,5 +10,4 @@ alias less='\less -FSRXc'
 # SLURM commands
 alias show_down_nodes='\sinfo --list-reasons --sort="+H" --format="%20n %8T %19H %11u %E"' # <--- adjust fields width for your cluster
 alias sinf='\sinfo --sort="-P,-T" --format="%20P %.4D %10T"'                               # <--- adjust fields width for your cluster
-alias squeue='\squeue --sort="-T,-S" -o "%.7i %14u %12j %18a %19S %5D %10M %2t %R"'
-
+alias sque='\squeue --sort="-T,-S" -o "%.7i %14u %12j %18a %19S %5D %10M %2t %R"'          # <--- adjust fields width for your needs
