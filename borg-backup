@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+#
+# Backup your dirs with BORG
+# Optionally send results to InfluxDB and/or VictoriaMetrics
+# 
+# check it with https://www.shellcheck.net/
+
+###########################################################
+#
+#  Prerequisites:
+#  - borg (borgbackup)
+#  - jq, yq (apt/yum install jq; pip3 install yq)
+#  - curl, grep
+#
+#  Notes:
+#    First you need to create a borg repo like this:
+#    borg init --encryption=repokey /path/to/repo
+#
+#    Use config (see borg-example.conf): borg-backup path-to-conf
+#
+#  To debug this script export DEBUG=yes before script run
+#
+
+# if test "$BASH" = "" || "$BASH" -uc "a=();true \"\${a[@]}\"" 2>/dev/null; then
+#     # Bash 4.4, Zsh
+#     set -euo pipefail
+# else
+#     # Bash 4.3 and older chokes on empty arrays with set -u.
+#     set -eo pipefail
+# fi
+# shopt -s nullglob globstar
+
+require(){ hash "$@" || exit 127; }
+
+require 'yq'
+require 'jq'
+require 'borg'
+require 'curl'
+require 'grep'
+
+# tune it for your script!
+cleanup() {
+    if [ "x$DEBUG" != xyes ]; then
+        if [ "x$TMPF" != x ]; then
+            rm "$TMPF"
+        fi
+        if [ "x$OUTFILE" != x ]; then
+            rm "$OUTFILE"
+        fi
+    fi
+}
+trap cleanup EXIT
+
+#!!!!!!!!! useful lib functions !!!!!!!!!!!!!!!!!!!!!
+
+## Use it instead of echo!!!
+function println() {
+    printf '%s\n' "$*"
+}
+
+# verbose exit
+function die {
+  >&2 echo "Fatal: ${*}"
+  exit 1
+}
+
+# Print error message
+function err() {
+  printf '%s\n' "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*" >&2
+}
+
+# Print all arguments
+function print_args() {
+    while [ "x$1" != x ]; do
+        print "--> %s" "$1"
+        shift
+    done
+}
+#!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+# recommended
+[[ "${BASH_VERSINFO[0]}" -lt 4 ]] && die "Bash >=4 required"
+
+###############################################################
+#
+#  Defaults
+#
+###############################################################
+TMPF="/tmp/borg-$$"
+OUTFILE="/tmp/borg-$$-out"
+HOSTNAME=$(hostname -s)
+
+if [ "x$DEBUG" = xyes ]; then
+    TMPF=/tmp/borg-debug
+    OUTFILE=/tmp/borg-debug-out
+    CURL="print_args curl -d"
+fi
+CURL="curl -s -d"
+
+# some helpers and error handling:
+xinfo()
+{
+    if [ "x$VERBOSE" != xno ]; then
+       	# /usr/bin/printf "\n%s %s\n\n" "$( date )" "$*"
+        err "$*"
+    fi
+}
+
+trap 'echo $( date ) Backup interrupted >&2; exit 2' INT TERM
+
+# read config
+if [ "x${1}" != x ]; then
+    set -o allexport
+    #shellcheck source=/dev/null
+    source "$1"
+    set +o allexport
+fi
+
+xinfo "Starting backup"
+
+# mount the (remote) directory for backup
+if [ "x${MOUNTPOINT}" != x ]; then
+
+    if ! mountpoint -q "${MOUNTPOINT}"; then
+        mount "${MOUNTPOINT}" || true
+        sleep 1
+    fi
+    if ! mountpoint -q "${MOUNTPOINT}"; then
+        xinfo "Cannot mount backup dir"
+        exit 1
+    fi
+fi
+
+# process config options
+if [ "x$EXCLUDE" != x ]; then
+    EXCLUDE_DIRS=()
+    IFS=' ' read -r -a array <<< "$EXCLUDE"
+    for i in "${array[@]}"; do
+        EXCLUDE_DIRS+=("--exclude" "$i")
+    done
+fi
+
+KEEPS=()
+if [ "x$KEEP_DAILY" != x ]; then
+    KEEPS+=(--keep-daily "${KEEP_DAILY}")
+fi
+if [ "x$KEEP_WEEKLY" != x ]; then
+    KEEPS+=(--keep-weekly "${KEEP_WEEKLY}")
+fi
+if [ "x$KEEP_MONTHLY" != x ]; then
+    KEEPS+=(--keep-monthly "${KEEP_MONTHLY}")
+fi
+
+# DO BACKUP!
+if [ "x$DEBUG" != xyes ]; then
+    borg create           \
+    --json                \
+    --stats               \
+    --compression lz4     \
+    --exclude-caches      \
+    "${EXCLUDE_DIRS[@]}"  \
+                          \
+    ::'{hostname}-{now}'  \
+    "${DIRS[@]}"          \
+    &> "${TMPF}"
+fi
+backup_exit=$?
+
+#yq '.archive.stats * .cache.stats * {"duration": .archive.duration} * {"name": .archive.name}' < "${TMPF}" | grep -E -v '{|}' | tee "$OUTFILE"
+yq '.archive.stats * .cache.stats * {"duration": .archive.duration} * {"name": .archive.name}' < "${TMPF}" | grep -E -v '{|}' > "$OUTFILE"
+
+xinfo "Pruning repository"
+
+# Use the `prune` subcommand to maintain 7 daily, 4 weekly and 6 monthly
+# archives of THIS machine. The '{hostname}-' prefix is very important to
+# limit prune's operation to this machine's archives and not apply to
+# other machines' archives also:
+
+if [ "x$DEBUG" != xyes ]; then
+    borg prune              \
+    --prefix '{hostname}-'  \
+    --show-rc               \
+    --list                  \
+    "${KEEPS[@]}"           \
+    &> "${TMPF}"
+    # --json                  \
+fi
+
+printf "%s\n" "\"Keep\": $(grep -c Keeping ${TMPF})" >> "${OUTFILE}"
+printf "%s\n" "\"Prune\": $(grep -c Pruning ${TMPF})" >> "${OUTFILE}"
+printf "%s\n" "$(grep terminating ${TMPF})"
+
+prune_exit=$?
+
+# use highest exit code as global exit code
+global_exit=$(( backup_exit > prune_exit ? backup_exit : prune_exit ))
+
+if [ ${global_exit} -eq 0 ]; then
+    xinfo "Backup and Prune finished successfully"
+elif [ ${global_exit} -eq 1 ]; then
+    xinfo "Backup and/or Prune finished with warnings"
+else
+    xinfo "Backup and/or Prune finished with errors"
+fi
+
+# umount backup directory if needed
+if [ "x${MOUNTPOINT}" != x ]; then
+    umount "${MOUNTPOINT}" || true
+fi
+
+# process stats
+while read -r k v; do
+    # printf "'%s'->'%s'\n" "$k" "$v"
+    k=${k%\":} # remove '":$'
+    k=${k#*\"} # remove '^"'
+    case "${k}" in
+        compressed_size)
+            cs="${v%,}"
+            ;;
+        deduplicated_size)
+            ds="${v%,}"
+            ;;
+        nfiles)
+            nf="${v%,}"
+            ;;
+        original_size)
+            os="${v%,}"
+            ;;
+        total_chunks)
+            tc="${v%,}"
+            ;;
+        duration)
+            dr="${v%,}"
+            ;;
+        Keep)
+            kp="${v%,}"
+            ;;
+        Prune)
+            pr="${v%,}"
+            ;;
+    esac
+done < "${OUTFILE}"
+
+# send to VM
+if [ "x${VICTORIA_ADDR_STATS}" != x ]; then
+    $CURL "backup,host=$HOSTNAME,kind=borg status=$global_exit,compressed_size=$cs,deduplicated_size=$ds,nfiles=$nf,original_size=$os,total_chunks=$tc,duration=$dr,kept=$kp,pruned=$pr" \
+        -X POST "$VICTORIA_ADDR_STATS"
+fi
+
+# send to influx
+if [ "x${INFLUX_ADDR_STATS}" != x ]; then
+    POST=<<END
+backup,host=$HOSTNAME,kind=borg,stat=exit value=$global_exit
+backup,host=$HOSTNAME,kind=borg,stat=exit compressed_size=$cs
+backup,host=$HOSTNAME,kind=borg,stat=exit deduplicated_size=$ds
+backup,host=$HOSTNAME,kind=borg,stat=exit nfiles=$nf
+backup,host=$HOSTNAME,kind=borg,stat=exit original_size=$os
+backup,host=$HOSTNAME,kind=borg,stat=exit total_chunks=$tc
+backup,host=$HOSTNAME,kind=borg,stat=exit duration=$dr
+backup,host=$HOSTNAME,kind=borg,stat=exit kept=$kp
+backup,host=$HOSTNAME,kind=borg,stat=exit pruned=$pr
+END
+    $CURL -X POST -i "$POST" --data-binary "$INFLUX_ADDR_STATS"
+fi
+
+exit ${global_exit}
+
