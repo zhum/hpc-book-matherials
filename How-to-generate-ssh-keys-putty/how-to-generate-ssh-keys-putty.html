@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>How to generate SSH keys using PuttyGen</title>
+  </head>
+  <body>
+
+<ol>
+	<li>Install puttygen program (is included into putty package and WinSCP)</li>
+	<li>Run puttygen, press "Generate" (Fig. 1)
+	<div><img alt="Puttygen" src="puttygen-1.png"><br>
+	Fig. 1</div>
+	</li>
+	<li>Move the mouse over the empty area, while the progress indicator goes to the end.</li>
+	<li>it is <strong>strongly recommended</strong> to change the key comment (Fig. 2),
+    then you always can identify your key.
+	<div><img alt="Comment" src="puttygen-2.png"><br>
+	Fig. 2.</div>
+	</li>
+  <li>Use a good password, sill it into "Key passphrase" and "Confirm passphrase" fields (Fig. 3)
+    <div><img alt="Password" src="puttygen-3.png"><br>
+	Fig. 3</div>
+	</li>
+	<li>Save the private key using the "Save private key" button.</li>
+	<li>Do not press "Save public key", instead select the all text in the
+    big text field (Fig. 4), then copy it into clipboard (Ctrl+C), open Notepad
+    or any other text editor, create a file, paste copied content and save it as
+    a publik key.
+	<div><img alt="Public key" src="puttygen-4.png"><br>
+	Fig. 4</div>
+	</li>
+  <li>To specify the key in the putty ssh client, go to "Connection-&gt;SSH-&gt;Auth"
+    and click "Browse", select your private key file (Fig. 5). Then return to "Session" and enter
+    your ssh server addres, user name and any other parameters you need.
+    I recommend to save session parameters, entering a name into "Saved Sessions" field and pressing "Save".
+    <div><img alt="Putty" src="putty_2.jpg"><br>
+	Fig. 5</div>
+	</li>
+</ol>
+</body>
+</html>
