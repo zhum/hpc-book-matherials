@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+#######################   TUNABLES!  #########################
+TOPUSERNUM=5              # how many top users to show
+NUM_WIDTH=4               # width of number values
+USE_COLOR=${USE_COLOR:-1} # 1 = use color; anything else = don't use color
+
+# Default list of partitions to show
+if [ "${PARTS:-none}" = none ]; then
+  PARTS="cpu gpu test"
+fi
+
+# Color gauge filler
+#CHAR="▒"
+CHAR="▓"
+#CHAR="█"
+#CHAR="░"
+#CHAR="☢"
+#CHAR="☷"
+#CHAR="⛶"
+#CHAR="▶"
+#CHAR="▦"
+#CHAR="▧" 
+
+# Non-color gauge fillers
+declare -a CHARS
+CHARS=('▦' '.' 'x')
+
+##########################  SCRIPT!  #########################
+
+PART_WIDTH=0
+for i in ${PARTS}; do
+  if [ ${PART_WIDTH} -lt ${#i} ]; then PART_WIDTH=${#i}; fi
+done
+
+declare -A states
+declare -A users
+
+# CHAR WIDTH color value color2 value2 ...
+colorBar() {
+  local c width len ignore val total new
+  c=${1:0:1}
+  c=${c:-#}
+  if [ $c = '%' ]; then c='%%'; fi
+  shift
+  width=$1
+  shift
+  len=$(($# / 2 ))
+  if [ $len -lt 1 ]; then return; fi
+  #!width=$(tput cols)
+  width=$((width-2))
+  ignore=1
+  total=0
+  for val in "${@}"; do
+    if [ $ignore = 1 ]; then ignore=0
+    else ignore=1; total=$((total+val)); # echo "val=$val -> total=$total"
+    fi
+  done
+
+  #echo "total=$total width=$width"
+  # |================//////////..............|
+  # <- drawn_chars -><- new  ->              width
+  #    drawn_val        val                  total
+  #  new = (width*(val+drawn_val))/total - drawn_chars
+  drawn_chars=0
+  drawn_val=0
+  printf "["
+  while [ "x${1}" != x ]; do
+    color=$1
+    shift
+    val=$1
+    shift
+
+    new=$(((width*(val+drawn_val))/total - drawn_chars))
+    if [ $new -eq 0 ]; then continue; fi
+#    echo
+#    echo "val=$val new=$new drawn_chars=$drawn_chars drawn_val=$drawn_val"
+    drawn_chars=$((drawn_chars+new))
+    drawn_val=$((drawn_val+val))
+
+    printf '\e[0;%sm' $color
+    eval "printf '$c%.0s' {1..${new}}"
+  done
+  printf "\e[0m]\n"
+}
+
+# WIDTH value value2 ...
+nonColorBar() {
+  local c width len ignore val total color_index new
+  width=$1
+  shift
+  len=$#
+  if [ $len -lt 1 ]; then return; fi
+  #!width=$(tput cols)
+  width=$((width-2))
+  total=0
+  for val in "${@}"; do
+    total=$((total+val)) # echo "val=$val -> total=$total"
+  done
+
+  #echo "total=$total width=$width"
+  # |================//////////..............|
+  # <- drawn_chars -><- new  ->              width
+  #    drawn_val        val                  total
+  #  new = (width*(val+drawn_val))/total - drawn_chars
+  drawn_chars=0
+  drawn_val=0
+  color_index=0
+  printf "["
+  while [ "x${1}" != x ]; do
+    c=${CHARS[$color_index]}
+    color_index=$((color_index+1))
+    if [ "$c" = '%' ]; then c='%%'; fi
+    val=$1
+    shift
+
+    new=$(((width*(val+drawn_val))/total - drawn_chars))
+    if [ $new -eq 0 ]; then continue; fi
+    drawn_chars=$((drawn_chars+new))
+    drawn_val=$((drawn_val+val))
+    #echo "new=$new; dc=$drawn_chars; dv=$drawn_val"
+
+    eval "printf '$c%.0s' {1..${new}}"
+  done
+  printf "]\n"
+}
+
+while read line; do
+  head=${line%%;*}
+  line=${line#*;}
+
+  hosts=${head#*:}
+
+  head=${line%%;*}
+  line=${line#*;}
+
+  state=${head#*:}
+  state=${state//\"/}
+  state=${state//\[/}
+  state=${state//\]/}
+
+  head=${line%%;*}
+  line=${line#*;}
+
+  user=${head#*:}
+
+  states["$state"]=${states["$state"]:-0}
+  users["$user"]=${users["$user"]:-0}
+  states["$state"]=$((${states["$state"]} + $hosts))
+  users["$user"]=$((${users["$user"]} + $hosts))
+  #echo "state=$state; keys => ${!states[@]}; values => ${states[@]}"
+done < <(squeue --json | jq -r '.jobs[]| "hosts:" + (.node_count.number|tostring) + ";state:" + (.job_state|tostring) + ";user:" + .account +"/" + .user_name')
+
+for i in RUNNING PENDING; do
+  states[$i]=${states[$i]:-0}
+  #echo "state=$i; keys => ${!states[@]}; values => ${states[@]}"
+  printf "%12s: %-${NUM_WIDTH}d\n" $i ${states[$i]}
+  unset states[$i]
+done
+
+for i in "${!states[@]}"; do
+  printf "%12s: %-${NUM_WIDTH}d\n" $i ${states[$i]}
+done
+
+#for i in "${!users[@]}"; do
+#  printf "%s: %3d " $i ${users[$i]}
+#done
+#printf "\n"
+readarray NAMES < <(for i in "${!users[@]}"; do
+  printf "%s %s\n" $i ${users[$i]}
+done | sort -rn -k2 | head -n $TOPUSERNUM)
+
+USER_WIDTH=0
+for i in ${NAMES[@]}; do
+  name=${i% *}
+  if [ ${USER_WIDTH} -lt ${#name} ]; then USER_WIDTH=${#name}; fi
+done
+
+
+for i in "${NAMES[@]}"; do
+  name=${i% *}
+  val=${i#* }
+  printf "%${USER_WIDTH}s %s\n" $name ${val}
+done
+
+declare -A allocated
+declare -A idle
+declare -A other
+while read line; do
+  IFS='/' read -r -a fields <<< "$line"
+  if [ ${fields[4]} -ne 0 ]; then
+    allocated[${fields[0]}]=$((${fields[1]} + ${allocated[${fields[0]}]:-0}))
+    idle[${fields[0]}]=$((${fields[2]} + ${idle[${fields[0]}]:-0}))
+    other[${fields[0]}]=$((${fields[3]} + ${other[${fields[0]}]:-0}))
+  fi
+done < <(sinfo --json | jq -r '.sinfo[]| "" + .partition.name + "/" + (.nodes.allocated| tostring) + "/" + ( .nodes.idle | tostring ) + "/" + ( .nodes.other | tostring ) +"/"+ ( .nodes.total | tostring
+ )')
+  
+width=$(tput cols)
+if [ $USE_COLOR = 1 ]; then
+  width=$((width-$PART_WIDTH-3*$NUM_WIDTH-2))
+  printf "\\e[32;47m%${PART_WIDTH}s %-${NUM_WIDTH}s\\e[33m%-${NUM_WIDTH}s\\e[31m%-${NUM_WIDTH}s\\e[m\n" Part Use Idl Flt
+else
+  width=$((width-$PART_WIDTH-3*$NUM_WIDTH-10))
+fi
+for i in ${PARTS}; do
+  if [ $USE_COLOR = 1 ]; then
+    printf "%${PART_WIDTH}s \\e[42;37m%-${NUM_WIDTH}d\\e[43m%-${NUM_WIDTH}d\\e[41m%-${NUM_WIDTH}d\\e[m " "$i" ${allocated[$i]} ${idle[$i]} ${other[$i]}
+    colorBar "$CHAR" $width 32 ${allocated[$i]} 33 ${idle[$i]} 31 ${other[$i]}
+  else
+    printf "%${PART_WIDTH}s a:%-${NUM_WIDTH}d i:%-${NUM_WIDTH}d o:%-${NUM_WIDTH}d " "$i" ${allocated[$i]} ${idle[$i]} ${other[$i]}
+    nonColorBar $width ${allocated[$i]} ${idle[$i]} ${other[$i]}
+  fi
+done
+

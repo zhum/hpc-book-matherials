@@ -4,10 +4,12 @@ Hello! If you read this book, you can find some useful additional files here. If
 
 Feel free to contribute - pull requests are welcome.
 
-- **How-to-generate-ssh-keys-putty** dir contains simply instrustions for Windows users about the ssh keys generation.
+- `How-to-generate-ssh-keys-putty` dir contains simply instrustions for Windows users about the ssh keys generation.
   You can use it as a base for the more comprehend instruction.
-- **bash-advanced-cheatsheet.sh** - useful examples of bash usage plus some awk.
-- **Runbook with Task Dependencies.xlsx** - MS Excel file with formulas, allowing you to create a task dependencies and visual time diagram
-- **simple-creds-sync.sh, simple-cred-sync-master.sh** - simple sctipts to sync credentials via static files
-- **useful_bash_aliases.sh** - some bash aliases useful for slurm usage
+- `bash-advanced-cheatsheet.sh` - some advances examples of bash usage, plus a few awk/sed examples
+- `useful_bash_aliases.sh` - some aliases, useful if you work with slurm
+- `Runbook with Task Dependencies.xlsx` - example of a runbook, with automated tasks dependencies
+- `simple-creds-sync.sh` - example script, running by simple-cred-sync-master.sh to sync creadentials
+- `simple-cred-sync-master.sh` - example script to sync credentials
+- `slurm-overview` - simple overview of slurm cluster
 
