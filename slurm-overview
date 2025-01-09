@@ -25,6 +25,19 @@ CHAR="▓"
 declare -a CHARS
 CHARS=('▦' '.' 'x')
 
+# colors for alloc/idle/failed numbers
+C_A="2"
+C_I="4"
+C_F="1"
+# -- codes for colors
+C_ALLOC="\\e[4${C_A};37m"
+C_IDLE="\\e[4${C_I}m"
+C_FAILED="\\e[4${C_F}m"
+# -- codes for colors of corresponding header (just inverted, e.g.)
+C_ALLOC_H="\\e[3${C_A};47m"
+C_IDLE_H="\\e[3${C_I}m"
+C_FAILED_H="\\e[3${C_F}m"
+
 ##########################  SCRIPT!  #########################
 
 PART_WIDTH=0
@@ -198,14 +211,14 @@ done < <(sinfo --json | jq -r '.sinfo[]| "" + .partition.name + "/" + (.nodes.al
 width=$(tput cols)
 if [ $USE_COLOR = 1 ]; then
   width=$((width-$PART_WIDTH-3*$NUM_WIDTH-2))
-  printf "\\e[32;47m%${PART_WIDTH}s %-${NUM_WIDTH}s\\e[33m%-${NUM_WIDTH}s\\e[31m%-${NUM_WIDTH}s\\e[m\n" Part Use Idl Flt
+  printf "${C_ALLOC_H}%${PART_WIDTH}s %-${NUM_WIDTH}s${C_IDLE_H}%-${NUM_WIDTH}s${C_FAILED_H}%-${NUM_WIDTH}s\\e[m\n" Part Use Idl Flt
 else
   width=$((width-$PART_WIDTH-3*$NUM_WIDTH-10))
 fi
 for i in ${PARTS}; do
   if [ $USE_COLOR = 1 ]; then
-    printf "%${PART_WIDTH}s \\e[42;37m%-${NUM_WIDTH}d\\e[43m%-${NUM_WIDTH}d\\e[41m%-${NUM_WIDTH}d\\e[m " "$i" ${allocated[$i]} ${idle[$i]} ${other[$i]}
-    colorBar "$CHAR" $width 32 ${allocated[$i]} 33 ${idle[$i]} 31 ${other[$i]}
+    printf "%${PART_WIDTH}s ${C_ALLOC}%-${NUM_WIDTH}d${C_IDLE}%-${NUM_WIDTH}d${C_FAILED}%-${NUM_WIDTH}d\\e[m " "$i" ${allocated[$i]} ${idle[$i]} ${other[$i]}
+    colorBar "$CHAR" $width 3${C_A} ${allocated[$i]} 3${C_I} ${idle[$i]} 3${C_F} ${other[$i]}
   else
     printf "%${PART_WIDTH}s a:%-${NUM_WIDTH}d i:%-${NUM_WIDTH}d o:%-${NUM_WIDTH}d " "$i" ${allocated[$i]} ${idle[$i]} ${other[$i]}
     nonColorBar $width ${allocated[$i]} ${idle[$i]} ${other[$i]}
