@@ -11,3 +11,5 @@ alias less='\less -FSRXc'
 alias show_down_nodes='\sinfo --list-reasons --sort="+H" --format="%20n %8T %19H %11u %E"' # <--- adjust fields width for your cluster
 alias sinf='\sinfo --sort="-P,-T" --format="%20P %.4D %10T"'                               # <--- adjust fields width for your cluster
 alias sque='\squeue --sort="-T,-S" -o "%.7i %14u %12j %18a %19S %5D %10M %2t %R"'          # <--- adjust fields width for your needs
+# sort queue(s) by jobs priority
+alias sque-prio='\squeue -S -Q -o "%6Q %.8i %.9P %.8j %.8u %.2t %.10M %19S %.6D %R"'       # <--- adjust fields width for your needs
