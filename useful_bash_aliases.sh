@@ -13,3 +13,9 @@ alias sinf='\sinfo --sort="-P,-T" --format="%20P %.4D %10T"'                    
 alias sque='\squeue --sort="-T,-S" -o "%.12i %14u %12j %18a %19S %5D %10M %2t %R"'          # <--- adjust fields width for your needs
 # sort queue(s) by jobs priority
 alias sque-prio='\squeue -S -Q -o "%6Q %.12i %.9P %.8j %.8u %.2t %.10M %19S %.6D %R"'       # <--- adjust fields width for your needs
+
+# show job info in a useful way
+function job_state() {
+    local job="${1:-none}"
+    \sacct -Xj "${job:-}" -p -o jobid,user,account,start,end,timelimit,state,nodelist | column -ts '|'
+}
