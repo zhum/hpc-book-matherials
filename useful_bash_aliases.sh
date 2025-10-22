@@ -14,8 +14,12 @@ alias sque='\squeue --sort="-T,-S" -o "%.12i %14u %12j %18a %19S %5D %10M %2t %R
 # sort queue(s) by jobs priority
 alias sque-prio='\squeue -S -Q -o "%6Q %.12i %.9P %.8j %.8u %.2t %.10M %19S %.6D %R"'       # <--- adjust fields width for your needs
 
-# show job info in a useful way
-function job_state() {
-    local job="${1:-none}"
-    \sacct -Xj "${job:-}" -p -o jobid,user,account,start,end,timelimit,state,nodelist | column -ts '|'
+# show jobs info in a useful way
+# examples:
+#   job_state -j 1234,5678                    # one-two jobs info
+#   job_state -N node-[10-20] -S 2222-11-22   # jobs on the specified nodes, running from specified date/time
+job_state() {
+    \sacct $@ -X -p -o jobid,user,account,start,end,timelimit,state,nodelist | column -ts '|'
 }
+
+
