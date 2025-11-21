@@ -216,7 +216,7 @@ esac
 os="$_"
 
 #-------------- Other tricks -------------------------
-"$SECONDS"            # Number of seconds the scipt is running
+"$SECONDS"            # Number of seconds the script is running
 val=$((RANDOM%=200))  # Random number 0..200
 read -n 1 ans         # Just one character
 read -p 'Enter number: ' -s -t 10 ans # Use prompt, do not show entered symbols, timeout in 10 sec
@@ -228,7 +228,7 @@ SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 # Convert decimal string in var MYVAR to a number even with leading 0
 $((10#MYVAR))
 
-# escape any tring!!!
+# escape any string!!!
 estr=$(printf "%q" "$str")
 
 # float math!!!!
@@ -253,7 +253,7 @@ mapfile -t file_data < "file"
 mapfile -tn 10 file_data < "file"
 
 
-# ------ Get forst/last day of previous month -------
+# ------ Get first/last day of previous month -------
 first_day=$(date -d "`date +%Y%m01` -1 month" +%Y%m%d)
 last_day=$(date -d "`date +%Y%m01` -1 day" +%Y%m%d)    # out format can be changed
 
@@ -330,7 +330,7 @@ done
 \e[0;36m 	Cyan
 \e[0;37m 	White
 
-"\e]11;#003000\a" # Change DEFAULT background color of teh terminal to RGB #003000
+"\e]11;#003000\a" # Change DEFAULT background color of the terminal to RGB #003000
 
 \e[2K                          - Clear Line
 \e[<L>;<C>H or \\033[<L>;<C>f  - Put the cursor at line L and column C.
@@ -403,13 +403,13 @@ BEGIN {
 BEGIN {print ENVIRON["USER"]}  # myusername
 
 # Key VARS:
-FS: Field separator. Field=part of line. In POSIX - sible char, in gawk CAN be regexp ('.' is NOT a regexp)
+FS: Field separator. Field=part of line. In POSIX - single char, in gawk CAN be regexp ('.' is NOT a regexp)
 RS: Record separator. Record=line. Empty = EOL
-# a b c\n1 2 3  => Fileds [a b c], [1 2 3]; Records: [a],[b],[c],[1],[2],[3]
-OFS,ORS: output field and recoed separators
+# a b c\n1 2 3  => Fields [a b c], [1 2 3]; Records: [a],[b],[c],[1],[2],[3]
+OFS,ORS: output field and record separators
 NF: Number of fields (in the current record)
 NR: Current record number
-FILENAME: filename, being processed ('-' for stdin). Undefiled in BEGIN section
+FILENAME: filename, being processed ('-' for stdin). Undefined in BEGIN section
 
 awk -v VAR=123 '{print VAR}' # set general purpose variables
 awk -v I=5 '{print $I}'      # print 5-th column only
