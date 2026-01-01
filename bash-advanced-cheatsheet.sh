@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# latest version is here: https://gist.github.com/zhum/b00b6c55e0559d0684796191eecf21d9
 # shellcheck disable=all
 
 #-------------- options --------------
@@ -98,6 +99,8 @@ NL="abc\nxyz\n"
 NL=${NL//$'\n'/} # "abcxyz"    | Remove all newlines.
 NL=${NL%$'\n'}   # "abc\nxyz"  | Remove a trailing newline.
 
+A="ABC^^\$"; [[ "$A" =~ [^@*$]+ ]] && A="${A%$BASH_REMATCH}" # Remove regex suffix
+
 #-------------- Case manipulation -------------------------
 STR="HELLO WORLD!"
 echo "${STR,}"   #=> "hELLO WORLD!" (lowercase 1st letter)
@@ -162,11 +165,13 @@ Fruits=( ${Fruits[@]/Ap*/} )            # Remove by regex match
 unset Fruits[2]                         # Remove one item
 Fruits=("${Fruits[@]}" "${Veggies[@]}") # Concatenate
 lines=(`cat "logfile"`)                 # Read from file
-for i in "${Fruits[@]}"; do ..; done # Iteration
+mapfile -t FRUITS < <(grep fruit /tmp/fruits-n-etc) # Read from other command (-t = delete "\n")
 IFS=', ' read -r -a array <<< "$string" # String -> Array
+for i in "${Fruits[@]}"; do ..; done # Iteration
 
 #-------------- Hashes -------------------------
 declare -A sounds
+sounds=( [cat]="meow" [dog]="woof" [mouse]="pip" )
 sounds[dog]="bark"
 
 echo "${sounds[dog]}" # Dog's sound
@@ -215,20 +220,37 @@ esac
 # Finally, set the variable.
 os="$_"
 
+#-------------- REGEXPS ------------------------------
+regex="([0-9]+):([0-9]+)"
+string="21:35"
+
+if [[ "$string" =~ $regex ]]; then
+  echo "Hour: ${BASH_REMATCH[1]}"
+  echo "Minute: ${BASH_REMATCH[2]}"
+fi
+
 #-------------- Other tricks -------------------------
-"$SECONDS"            # Number of seconds the script is running
+"$SECONDS"            # Number of seconds the scipt is running
 val=$((RANDOM%=200))  # Random number 0..200
 read -n 1 ans         # Just one character
 read -p 'Enter number: ' -s -t 10 ans # Use prompt, do not show entered symbols, timeout in 10 sec
 while read x; do echo "$x"; done < <(cat file) # process input in `while read` without subshell
 
+# !!!! WARNING !!! If you use ssh inside the "while read" loop, REDIRECT the STDIN!
+while read host; ssh host true </dev/null; done < hostlist
+# Otherwise it will read ONLY THE FIRST LINE, as ssh intercepts and closes stdin.
+
 # Path to curent script
 SCRIPTPATH="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
+
+# Another way
+ME=$(readlink -f "${BASH_SOURCE[0]}")
+MYDIR=$(dirname "$ME")
 
 # Convert decimal string in var MYVAR to a number even with leading 0
 $((10#MYVAR))
 
-# escape any string!!!
+# escape any tring!!!
 estr=$(printf "%q" "$str")
 
 # float math!!!!
@@ -241,7 +263,7 @@ type -p executable_name &>/dev/null
 # get the FIRST occurence of the pattern:
 # Usage: regex "string" "regex"
 regex() {
-    [[ $1 =~ $2 ]] && printf '%s\n' "${BASH_REMATCH[1]}"
+    [[ "$1" =~ $2 ]] && printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
 # read a file contents into a variable
@@ -253,7 +275,7 @@ mapfile -t file_data < "file"
 mapfile -tn 10 file_data < "file"
 
 
-# ------ Get first/last day of previous month -------
+# ------ Get forst/last day of previous month -------
 first_day=$(date -d "`date +%Y%m01` -1 month" +%Y%m%d)
 last_day=$(date -d "`date +%Y%m01` -1 day" +%Y%m%d)    # out format can be changed
 
@@ -262,7 +284,7 @@ last_day=$(date -d "`date +%Y%m01` -1 day" +%Y%m%d)    # out format can be chang
 # stolen from here: https://stackoverflow.com/questions/2175647/is-it-possible-to-detect-which-trap-signal-in-bash
 trap_with_arg() {
     func="$1" ; shift
-    for sig ; do
+    for sig in "$@"; do
         trap "$func $sig" "$sig"
     done
 }
@@ -330,7 +352,7 @@ done
 \e[0;36m 	Cyan
 \e[0;37m 	White
 
-"\e]11;#003000\a" # Change DEFAULT background color of the terminal to RGB #003000
+"\e]11;#003000\a" # Change DEFAULT background color of teh terminal to RGB #003000
 
 \e[2K                          - Clear Line
 \e[<L>;<C>H or \\033[<L>;<C>f  - Put the cursor at line L and column C.
@@ -342,6 +364,18 @@ done
 \e[K                           - Erase to end of line
 \e[s                           - Save cursor position
 \e[u                           - Restore cursor position
+
+#--------------- Quick code showing colors -------------------
+#!/usr/bin/env bash
+
+declare -A colors
+declare -a names
+colors=( ['Black']="[0;30m" ['Red']="[0;31m" ['Green']="[0;32m" ['Yellow']="[0;33m" ['Blue']="[0;34m" ['Purple']="[0;35m" ['Cyan']="[0;36m" ['White']="[0;37m" )
+names=('Black' 'Red' 'Green' 'Yellow' 'Blue' 'Purple' 'Cyan' 'White' )
+
+for i in "${names[@]}"; do
+  printf "\e${colors[$i]}%6s\e[0m\n" $i
+done
 
 #--------------- Check colors / UTF support ------------------
 
@@ -357,7 +391,7 @@ is-tty-unicode() {  # true=0 / false=1
 }
 
 
-# ============= AWK tricks ================
+# ------ AWK tricks -------
 
 # get a group from regexp. Note: it is used INSTEAD of /.../ filter
 # array index 0 = FULL match, 1 = 1st group, etc.
@@ -403,19 +437,19 @@ BEGIN {
 BEGIN {print ENVIRON["USER"]}  # myusername
 
 # Key VARS:
-FS: Field separator. Field=part of line. In POSIX - single char, in gawk CAN be regexp ('.' is NOT a regexp)
+FS: Field separator. Field=part of line. In POSIX - sible char, in gawk CAN be regexp ('.' is NOT a regexp)
 RS: Record separator. Record=line. Empty = EOL
-# a b c\n1 2 3  => Fields [a b c], [1 2 3]; Records: [a],[b],[c],[1],[2],[3]
-OFS,ORS: output field and record separators
+# a b c\n1 2 3  => Fileds [a b c], [1 2 3]; Records: [a],[b],[c],[1],[2],[3]
+OFS,ORS: output field and recoed separators
 NF: Number of fields (in the current record)
 NR: Current record number
-FILENAME: filename, being processed ('-' for stdin). Undefined in BEGIN section
+FILENAME: filename, being processed ('-' for stdin). Undefiled in BEGIN section
 
 awk -v VAR=123 '{print VAR}' # set general purpose variables
 awk -v I=5 '{print $I}'      # print 5-th column only
 
-# AWK Selectors
+# Selectors
 (FNR == 3),(FNR == 10)      # Select lines 3..10
-/^BEGIN/,/^END/             # Select lines from starting with 'BEGIN ...' to starting with 'END ...'
+/^BEGIN/,/^END/             # Select lines from 'BEGIN ...' to 'END ...'
 /abc*/                      # lines containing abc* regexp
 
