@@ -1,0 +1,687 @@
+#!/usr/bin/env bash
+# Author: Sergey Zhumatiy <szhumatiy@gmail.com>
+# Version: 1.0.0
+# Date: 2026-01-02
+# License: Apache 2.0
+#
+# This script was made with help of Cursor AI (especially for jq/awk commands)
+#
+
+# !!!!!!!!!!!!!!!!!!  UPDATE THIS LIST for your cluster !!!!!!!!!!!!!!!!!!
+# PARTS keys are hostname prefixes, PARTS_XXXX - lists of partitions you want to see
+declare -A PARTS
+PARTS_MYCLUSTER=(default cpu testing)
+PARTS_PROD=(hpc gpu cpu)
+PARTS["mycluster-"]=PARTS_MYCLUSTER
+PARTS["prod-cluster-"]=PARTS_PROD
+
+warn_jobs_threshold=1000              # Warn if many pending jobs
+alert_jobs_threshold=2000             # Alert if too many pending jobs
+warn_nodes_threshold=15               # Warn if low nodes running jobs
+alert_nodes_threshold=50              # Alert if low nodes running jobs
+
+# !!!!!!!!!!!!!!!!!  Options, you can change if you want !!!!!!!!!!!!!!!!!
+# Default values
+TOP_USERS_LIMIT="${TOP_USERS_LIMIT:-5}" # Maximum number of top users to display
+FORCE_COLOR=""
+FORCE_NOCOLOR=""
+SPIN_SPEED=30     # Spinner speed in "Analyzing" phase. Larger=slower
+
+acc_user_width=8  # Minimum width for "Acc/User" column
+nodes_width=5     # Minimum width for "Nodes" column
+jobs_width=4      # Minimum width for "Jobs" column
+
+part_width=4     # Minimum width for "Part" column
+use_width=3      # Minimum width for "Use" column
+idl_width=3      # Minimum width for "Idl" column
+res_width=3      # Minimum width for "Res" column (idle+reserved)
+ral_width=3      # Minimum width for "RAl" column (alloc+reserved)
+bad_width=3      # Minimum width for "Bad" column
+sum_width=3      # Minimum width for "Sum" column
+
+# Colors are defined much below, you can change them if you want
+
+# !!!!!!!!!!!!!!!!!!  --------------------------------- !!!!!!!!!!!!!!!!!!
+
+# Show help message
+show_help() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Generate a quick summary of SLURM cluster status showing running/pending jobs,
+top users, and partition statistics with visual bars.
+
+Options:
+  -t THEME      Set bar theme: default, ascii, unicode, color_mono, fancy, blocks, dots
+  -c            Force color output (override terminal detection)
+  -n            Force no color output
+  -p PARTITIONS Comma-separated list of partitions to display
+  -u NUM        Maximum number of top users to display (default: 5)
+  -h            Show this help message
+
+Node State Categories:
+  Use  - Allocated nodes (running jobs)
+  Idl  - Idle nodes (available)
+  Res  - Reserved idle nodes (IDLE+RESERVED)
+  RAl  - Reserved allocated nodes (ALLOCATED+RESERVED)
+  Bad  - Unavailable nodes (down, drain, etc.)
+
+Bar Themes:
+  default      Simple ASCII characters (#, ., r, R, x)
+  ascii        Block characters (▓, ░, ▒, ▓, X)
+  color_mono   (default for color mode) Block with different colors (▓)
+  unicode      Full blocks with radiation symbol (█, ▒, ░, ▓, ▧)
+  fancy        Emojis symbols (👍, 🌴, 🔒, ⚡, 💀)
+  blocks       Gradient blocks (▰, ▱, ▢, ▣, ▨)
+  dots         Circular indicators (●, ○, ◌, ◍, ◉)
+
+Environment Variables:
+  TOP_USERS_LIMIT  Maximum number of top users to display (default: 5)
+  BAR_THEME        Theme for the bar
+  BAR_NOCOLOR      Disable color output (set to any value)
+  PART_LIST        List of partitions to display
+  BAR_ALLOC_CHAR   Character for allocated nodes
+  BAR_IDLE_CHAR    Character for idle nodes
+  BAR_RES_CHAR     Character for reserved idle nodes
+  BAR_RAL_CHAR     Character for reserved allocated nodes
+  BAR_BAD_CHAR     Character for unavailable nodes
+
+Examples:
+  $(basename "$0")                          # Auto-detect partitions and settings
+  $(basename "$0") -t fancy -c              # Fancy theme with colors
+  $(basename "$0") -t blocks -p batch,cpu   # Blocks theme for specific partitions
+  $(basename "$0") -p batch,cpu -u 10       # Show batch and cpu partitions, top 10 users
+  $(basename "$0") -t dots -n               # Dots theme without colors
+
+EOF
+    exit 0
+}
+
+# Parse command-line arguments
+while getopts "t:cnp:u:dh" opt; do
+    case "$opt" in
+        t) BAR_THEME="$OPTARG" ;;
+        c) FORCE_COLOR="yes" ;;
+        n) FORCE_NOCOLOR="yes" ;;
+        p) PART_LIST="$OPTARG" ;;
+        u) TOP_USERS_LIMIT="$OPTARG" ;;
+        d) DEBUG="yes" ;;
+        h) show_help ;;
+        *) show_help ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+# Check if a required command is available
+required() {
+    local cmd="$1"
+    for cmd in "$@"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo "Error: Required command '$cmd' not found in PATH" >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
+# Check for required commands
+required sinfo squeue awk tput mktemp grep sort head tail wc jq || exit 1
+
+# Detect Unicode support in terminal
+supports_unicode() {
+    # Check if locale supports UTF-8
+    if [[ "${LANG:-}" =~ UTF-8 ]] || [[ "${LC_ALL:-}" =~ UTF-8 ]] || [[ "${LC_CTYPE:-}" =~ UTF-8 ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# Detect color support in terminal
+supports_color() {
+    local colors
+    colors=$(tput colors 2>/dev/null || echo 0)
+    [ "$colors" -ge 8 ]
+}
+
+# Expand a single range like "001-003" or "1,3,5" or "01-03,05,07-09"
+expand_range() {
+    local range="$1"
+    local results=()
+    
+    # Split by comma
+    IFS=',' read -ra parts <<< "$range"
+    
+    for part in "${parts[@]}"; do
+        if [[ "$part" == *-* ]]; then
+            # It's a range like "001-003"
+            local start="${part%-*}"
+            local end="${part#*-}"
+            
+            # Detect zero-padding width
+            local width=${#start}
+            
+            # Remove leading zeros for arithmetic
+            local start_num=$((10#$start))
+            local end_num=$((10#$end))
+            
+            # Generate sequence
+            for ((i=start_num; i<=end_num; i++)); do
+                printf -v padded "%0${width}d" "$i"
+                results+=("$padded")
+            done
+        else
+            # Single value
+            results+=("$part")
+        fi
+    done
+    
+    IFS="\n" echo "${results[@]}"
+    IFS=" "
+}
+
+# Expand a hostlist expression (handles nested brackets)
+expand_hostlist() {
+    local input="$1"
+    local results=("$input")
+    
+    # Keep expanding until no more brackets
+    while [[ "${results[0]}" == *'['* ]]; do
+        local new_results=()
+        
+        for item in "${results[@]}"; do
+            if [[ "$item" == *'['* ]]; then
+                # Find the first [...] bracket pair
+                local prefix="${item%%\[*}"
+                local rest="${item#*\[}"
+                local range="${rest%%\]*}"
+                local suffix="${rest#*\]}"
+                
+                # Expand this range
+                local expanded
+                read -ra expanded <<< "$(expand_range "$range")"
+                
+                # Create new items with each expanded value
+                for val in "${expanded[@]}"; do
+                    new_results+=("${prefix}${val}${suffix}")
+                done
+            else
+                new_results+=("$item")
+            fi
+        done
+        
+        results=("${new_results[@]}")
+    done
+    
+    IFS="\n" echo "${results[@]}"
+    IFS=" "
+}
+
+# Determine partitions to display
+if [ -z "${PART_LIST:-}" ]; then
+    found=nope
+    for i in ${!PARTS[@]}; do
+        if [[ "$HOSTNAME" =~ ^$i ]]; then
+            P="${PARTS[$i]}[@]"
+            PART=(${!P})
+            found=yep
+            break
+        fi
+    done
+    if [ $found != yep -o -z "${PART_LIST:-}" ]; then
+        readarray -t PART < <(sinfo --Format=partition -h | tr -d '* ')
+    fi
+    IFS="," PART_LIST="${PART[*]}"
+    IFS=" "
+fi
+
+# Determine if color mode should be enabled
+USE_COLOR=false
+if [ -n "$FORCE_NOCOLOR" ] || [ -n "${BAR_NOCOLOR:-}" ]; then
+    USE_COLOR=false
+elif [ -n "$FORCE_COLOR" ]; then
+    USE_COLOR=true
+elif supports_color; then
+    USE_COLOR=true
+fi
+
+# Define color codes
+if [ "$USE_COLOR" = true ]; then
+    COLOR_RED=$'\033[38;5;1m'
+    COLOR_GREEN=$'\033[38;5;2m'
+    COLOR_YELLOW=$'\033[38;5;3m'
+    COLOR_BLUE=$'\033[38;5;4m'
+    COLOR_MAGENTA=$'\033[38;5;5m'
+    COLOR_CYAN=$'\033[38;5;6m'
+    COLOR_WHITE=$'\033[38;5;15m'
+    COLOR_RESET=$'\033[0m'
+
+    COLOR_BAD=$COLOR_RED
+    COLOR_ALLOC=$COLOR_GREEN
+    COLOR_IDLE=$COLOR_BLUE
+    COLOR_RES=$COLOR_MAGENTA    # reserved (idle+reserved)
+    COLOR_RAL=$COLOR_YELLOW     # ralloc (alloc+reserved)
+    COLOR_SUM=$COLOR_WHITE
+else
+    COLOR_BAD=''
+    COLOR_ALLOC=''
+    COLOR_IDLE=''
+    COLOR_RES=''
+    COLOR_RAL=''
+    COLOR_MAGENTA=''
+    COLOR_RESET=''
+fi
+
+# Bar themes:
+# Auto-detect theme if not explicitly set
+if [ -z "${BAR_THEME:-}" ]; then
+    if [ "$USE_COLOR" = true ]; then
+        BAR_THEME="color_mono"
+    elif supports_unicode; then
+        BAR_THEME="unicode"
+    else
+        BAR_THEME="default"
+    fi
+fi
+
+BAR_CHAR_WIDTH=1   # Default width for bar characters
+case "$BAR_THEME" in
+    default)
+        BAR_ALLOC_CHAR="${BAR_ALLOC_CHAR:-#}"
+        BAR_IDLE_CHAR="${BAR_IDLE_CHAR:-.}"
+        BAR_RES_CHAR="${BAR_RES_CHAR:-r}"       # reserved (idle+reserved)
+        BAR_RAL_CHAR="${BAR_RAL_CHAR:-R}"       # ralloc (alloc+reserved)
+        BAR_BAD_CHAR="${BAR_BAD_CHAR:-x}"
+        ;;
+    ascii)
+        BAR_ALLOC_CHAR="${BAR_ALLOC_CHAR:-▓}"
+        BAR_IDLE_CHAR="${BAR_IDLE_CHAR:-░}"
+        BAR_RES_CHAR="${BAR_RES_CHAR:-▒}"
+        BAR_RAL_CHAR="${BAR_RAL_CHAR:-▓}"
+        BAR_BAD_CHAR="${BAR_BAD_CHAR:-X}"
+        ;;
+    unicode)
+        BAR_ALLOC_CHAR="${BAR_ALLOC_CHAR:-█}"
+        BAR_IDLE_CHAR="${BAR_IDLE_CHAR:-▒}"
+        BAR_RES_CHAR="${BAR_RES_CHAR:-░}"
+        BAR_RAL_CHAR="${BAR_RAL_CHAR:-▓}"
+        BAR_BAD_CHAR="${BAR_BAD_CHAR:-☢}"
+        ;;
+    color_mono)
+        BAR_ALLOC_CHAR="${BAR_ALLOC_CHAR:-▓}"
+        BAR_IDLE_CHAR="${BAR_IDLE_CHAR:-▓}"
+        BAR_RES_CHAR="${BAR_RES_CHAR:-▓}"
+        BAR_RAL_CHAR="${BAR_RAL_CHAR:-▓}"
+        BAR_BAD_CHAR="${BAR_BAD_CHAR:-▓}"
+        ;;
+    fancy)
+        # Fancy theme with distinctive Unicode patterns (emojis are double-width)
+        BAR_ALLOC_CHAR="${BAR_ALLOC_CHAR:-👍}"
+        BAR_IDLE_CHAR="${BAR_IDLE_CHAR:-🌴}"
+        BAR_RES_CHAR="${BAR_RES_CHAR:-🔒}"
+        BAR_RAL_CHAR="${BAR_RAL_CHAR:-⚡}"
+        BAR_BAD_CHAR="${BAR_BAD_CHAR:-💀}"
+        BAR_CHAR_WIDTH=2
+        ;;
+    blocks)
+        # Block-based theme with gradient effect
+        BAR_ALLOC_CHAR="${BAR_ALLOC_CHAR:-▰}"   # Solid block for allocated
+        BAR_IDLE_CHAR="${BAR_IDLE_CHAR:-▱}"     # Hollow block for idle
+        BAR_RES_CHAR="${BAR_RES_CHAR:-▢}"       # Square for reserved
+        BAR_RAL_CHAR="${BAR_RAL_CHAR:-▣}"       # Filled square for ralloc
+        BAR_BAD_CHAR="${BAR_BAD_CHAR:-▨}"       # Hatched block for bad
+        ;;
+    dots)
+        # Dot-based minimalist theme
+        BAR_ALLOC_CHAR="${BAR_ALLOC_CHAR:-●}"   # Filled circle for allocated
+        BAR_IDLE_CHAR="${BAR_IDLE_CHAR:-○}"     # Hollow circle for idle
+        BAR_RES_CHAR="${BAR_RES_CHAR:-◌}"       # Dotted circle for reserved
+        BAR_RAL_CHAR="${BAR_RAL_CHAR:-◍}"       # Circle with fill for ralloc
+        BAR_BAD_CHAR="${BAR_BAD_CHAR:-◉}"       # Circle with dot for bad
+        ;;
+    *)
+        echo "Error: Invalid bar theme: $BAR_THEME (valid: default, ascii, unicode, color_mono, fancy, blocks, dots)" >&2
+        exit 1
+        ;;
+esac
+
+# Get terminal width (default to 80 if cannot detect)
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
+
+# Create temp files for processing
+TMP_DIR=$(mktemp -d)
+trap 'if [ -z "$DEBUG" ]; then rm -rf "$TMP_DIR"; else echo "DEBUG directory: $TMP_DIR"; fi' EXIT
+
+are_pids_alive() {
+  local pid
+  for pid in "$@"; do
+    if kill -0 $pid &>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+spinner_phase=0
+# Spinner function (UTF-8 spinner, falls back to ascii)
+spinner() {
+    local spinners=('/|\-' '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏')
+    local spinstr
+    if [[ "$LANG" =~ UTF-8 ]] && [ -z "$NO_UNICODE" ]; then
+        spinstr="${spinners[1]}"
+    else
+        spinstr="${spinners[0]}"
+    fi
+
+    local msg="${1:-Loading}"
+    shift
+    local -a pids=("$@")
+    # tput civis 2>/dev/null || true  # hide cursor, if script is interrupted, cursor will be not visible :(
+    if [ ${#pids} -gt 0 ]; then
+        while are_pids_alive "${pids[@]}"; do
+            local c="${spinstr:spinner_phase++%${#spinstr}:1}"
+            printf "\r%s [%s]" "$msg" "$c"
+            sleep 0.05
+        done
+    else
+        local c="${spinstr:spinner_phase++%${#spinstr}:1}"
+        printf "\r%s [%s]" "$msg" "$c"
+    fi
+    # tput cnorm 2>/dev/null || true  # restore cursor
+}
+
+SQUEUE_OUTPUT="$TMP_DIR/squeue_output.txt"
+SINFO_OUTPUT="$TMP_DIR/sinfo_output.txt"
+PART_STATS="$TMP_DIR/part_stats.txt"
+PART_STATS_TMP="$TMP_DIR/part_stats_tmp.txt"
+USER_STATS="$TMP_DIR/user_stats.txt"
+
+echo
+# Get squeue data with extended format
+# Format: JOBID PARTITION NAME USER ACCOUNT STATE TIME_LIMIT NODES NODELIST REASON
+# (squeue --all -O 'JobID:10,Partition:24 ,Name:15 ,UserName:24 ,Account:32 ,State,TimeLimit:16,NumNodes:7 ,NodeList: ,Reason' > "$SQUEUE_OUTPUT") &
+(squeue --all --json | 
+  jq -r '.jobs[] | 
+  .user_name + " " + 
+  .account + " " + 
+  ([.job_state] | flatten | join(",")) + " " + 
+  (.node_count.number | tostring) + " " + 
+  .nodes' > "$SQUEUE_OUTPUT") &
+SQUEUE_PID=$!
+
+# Parse sinfo JSON output to aggregate partition statistics with compound states
+# Categories:
+#   alloc: ALLOCATED, MIXED, COMPLETING (without RESERVED)
+#   idle: IDLE (without RESERVED)
+#   res: IDLE + RESERVED (reserved idle nodes)
+#   ral: (ALLOCATED | COMPLETING | MIXED) + RESERVED (reserved allocated nodes)
+#   bad: DOWN, DRAIN, FUTURE, etc.
+(sinfo --json -N -p "$PART_LIST" 2>/dev/null | jq -r '.sinfo[] |
+    .partition.name as $part |
+    .nodes.nodes[0] as $node |
+    .node.state as $state |
+    # Determine category based on state array
+    (
+        ($state | map(ascii_upcase)) as $states |
+        if ($states | index("RESERVED")) then
+            # Has RESERVED flag
+            if ($states | any(. == "IDLE")) then
+                "res"
+            elif ($states | any(. == "ALLOCATED" or . == "MIXED" or . == "COMPLETING")) then
+                "ral"
+            else
+                "bad"
+            end
+        elif ($states | any(. == "ALLOCATED" or . == "MIXED" or . == "COMPLETING" or . == "DRAINING")) then
+            "alloc"
+        elif ($states | any(. == "IDLE" or . == "PLANNED")) then
+            "idle"
+        else
+            "bad"
+        end
+    ) as $category |
+    "\($part) \($node) \($category)"
+' | tee "$PART_STATS_TMP" | awk '
+{
+    part = $1
+    node = $2
+    category = $3
+    
+    # Track unique nodes per partition per category
+    key = part SUBSEP node SUBSEP category
+    if (!(key in seen)) {
+        seen[key] = 1
+        count[part, category]++
+        total[part]++
+    }
+}
+END {
+    for (p in total) {
+        printf "%s %d %d %d %d %d %d\n", p, count[p,"alloc"]+0, count[p,"idle"]+0, count[p,"res"]+0, count[p,"ral"]+0, count[p,"bad"]+0, total[p]
+    }
+}' | sort > "$PART_STATS") &
+SINFO_PID=$!
+
+# Run squeue and sinfo in background with spinner
+spinner "Querying cluster state" $SQUEUE_PID $SINFO_PID
+
+total_nodes=$(awk '{seen[$2]=1} END {print length(seen)}' "$PART_STATS_TMP")
+
+pending_nodes=0
+pending_jobs=0
+running_nodes=0
+running_jobs=0
+declare -A running_nodes_array=()
+
+linecount=0
+while IFS=' ' read -r user account state nodes nodelist; do
+    # Handle empty account
+    [ -z "$account" ] || [ "$account" = "-" ] && account="unknown"
+    
+    # Count running jobs
+    if [[ "$state" =~ "RUNNING"|"COMPLETING" ]]; then
+        running_jobs=$((running_jobs + 1))
+        # Only add non-empty nodelists
+        if [ -n "$nodelist" ]; then
+          if [[ ${nodelist} =~ ,|\[ ]]; then
+            expanded_nodelist=$(expand_hostlist "$nodelist")
+            for node in $expanded_nodelist; do
+              running_nodes_array["$node"]=1
+            done
+          else
+            running_nodes_array["$nodelist"]=1
+            echo "$account/$user $nodelist" >> "$USER_STATS"
+          fi
+        fi
+    elif [[ "$state" =~ "PENDING" ]]; then
+        pending_jobs=$((pending_jobs + 1))
+        if [ -n "$nodes" ]; then
+          pending_nodes=$((pending_nodes + nodes))
+        fi
+    fi
+
+    # Update spinner
+    if [ $linecount -eq 0 ]; then
+        spinner "Analyzing cluster state"
+        linecount=1
+    else
+        if [ $linecount -ge $SPIN_SPEED ]; then
+            linecount=0
+        else
+            linecount=$((linecount+1))
+        fi
+    fi
+done < <(tail -n +2 "$SQUEUE_OUTPUT")
+
+printf "\r"
+# Calculate running totals
+running_nodes=${#running_nodes_array[@]}
+
+run_nodes_color=$COLOR_ALLOC
+pending_jobs_color=$COLOR_IDLE
+
+run_nodes_percentage=$((running_nodes * 100 / total_nodes))
+if [ $pending_jobs -gt $alert_jobs_threshold ]; then
+    pending_jobs_color=$COLOR_RED
+elif [ $pending_jobs -gt $warn_jobs_threshold ]; then
+    pending_jobs_color=$COLOR_YELLOW
+fi
+if [ $run_nodes_percentage -lt $alert_nodes_threshold ]; then
+    run_nodes_color=$COLOR_RED
+elif [ $run_nodes_percentage -lt $warn_nodes_threshold ]; then
+    run_nodes_color=$COLOR_YELLOW
+fi
+
+# Print summary header
+printf "${COLOR_ALLOC} RUNNING: nodes ${run_nodes_color}%-6d (%3d%%)${COLOR_ALLOC} jobs %-6d${COLOR_RESET}\n" "$running_nodes" "$run_nodes_percentage" "$running_jobs"
+printf "${COLOR_IDLE} PENDING: nodes %-6d        jobs ${pending_jobs_color}%-6d${COLOR_IDLE} ${COLOR_RESET}\n" "$pending_nodes" "$pending_jobs"
+echo
+
+# Aggregate user stats and get top users by unique node count
+TOP_USERS="$TMP_DIR/top_users.txt"
+if [ -f "$USER_STATS" ]; then
+    # Count unique nodes per user
+    awk '{
+        user = $1
+        nodelist = $2
+        if (nodelist != "") {
+            # Track unique nodes per user
+            if (!(user SUBSEP nodelist in seen)) {
+                nodes[user,nodelist] = 1
+                seen[user SUBSEP nodelist] = 1
+            }
+        }
+        jobs[user]++
+    }
+    END {
+        for (key in nodes) {
+            split(key, arr, SUBSEP)
+            user = arr[1]
+            user_nodes[user]++
+        }
+        for (u in user_nodes) {
+            print u, user_nodes[u], jobs[u]
+        }
+    }' "$USER_STATS" | sort -k2 -rn | head "-${TOP_USERS_LIMIT}" > "$TOP_USERS"
+fi
+
+count=0
+if [ -f "$TOP_USERS" ] && [ -s "$TOP_USERS" ]; then
+    while read -r acc_user nodes jobs; do
+        # Update max widths based on data
+        [ ${#acc_user} -gt $acc_user_width ] && acc_user_width=${#acc_user}
+        [ ${#nodes} -gt $nodes_width ] && nodes_width=${#nodes}
+        [ ${#jobs} -gt $jobs_width ] && jobs_width=${#jobs}
+    done < "$TOP_USERS"
+fi
+
+# Print top users table header
+printf "\r %-${acc_user_width}s %-${nodes_width}s %-${jobs_width}s\n" "TOP Acc/User" "Nodes" "Jobs"
+
+# Print top users data
+if [ -f "$TOP_USERS" ] && [ -s "$TOP_USERS" ]; then
+    while read -r acc_user nodes jobs; do
+        printf " %-${acc_user_width}s %-${nodes_width}d %-${jobs_width}d\n" "$acc_user" "$nodes" "$jobs"
+    done < "$TOP_USERS"
+fi
+
+echo
+
+# Calculate column widths dynamically
+if [ -f "$PART_STATS" ] && [ -s "$PART_STATS" ]; then
+    while read -r partition alloc idle res ral bad total; do
+        # Skip partitions with no data
+        [ "$total" -eq 0 ] && continue
+        
+        # Update max widths based on data
+        [ ${#partition} -gt $part_width ] && part_width=${#partition}
+        [ ${#alloc} -gt $use_width ] && use_width=${#alloc}
+        [ ${#idle} -gt $idl_width ] && idl_width=${#idle}
+        [ ${#res} -gt $res_width ] && res_width=${#res}
+        [ ${#ral} -gt $ral_width ] && ral_width=${#ral}
+        [ ${#bad} -gt $bad_width ] && bad_width=${#bad}
+        [ ${#total} -gt $sum_width ] && sum_width=${#total}
+    done < "$PART_STATS"
+fi
+
+# Calculate bar width based on remaining terminal width
+# Format: " <part> <use> <idl> <res> <ral> <bad> <sum> [<bar>]"
+columns_width=$((1 + part_width + 1 + use_width + 1 + idl_width + 1 + res_width + 1 + ral_width + 1 + bad_width + 1 + sum_width + 4))
+bar_width_cols=$((TERM_WIDTH - columns_width))
+# Adjust for double-width characters (like emojis)
+# bar_width is the number of characters to display, not columns
+bar_width=$((bar_width_cols / BAR_CHAR_WIDTH))
+# Ensure minimum bar width (in characters)
+[ "$bar_width" -lt 10 ] && bar_width=10
+
+# Print partition statistics header
+printf " %-${part_width}s %-${use_width}s %-${idl_width}s %-${res_width}s %-${ral_width}s %-${bad_width}s %-${sum_width}s\n" "Part" "Use" "Idl" "Res" "RAl" "Bad" "Sum"
+
+# Print partition statistics with visual bars
+if [ -f "$PART_STATS" ] && [ -s "$PART_STATS" ]; then
+    while read -r partition alloc idle res ral bad total; do
+        # Skip partitions with no data
+        if [ "$total" -eq 0 ]; then
+            continue
+        fi
+        
+        # Generate visual bar
+        bar=""
+        
+        # Calculate proportions for 5 categories: alloc, idle, res, ral, bad
+        if [ "$total" -gt 0 ]; then
+            alloc_chars=$(( (alloc * bar_width) / total ))
+            idle_chars=$(( (idle * bar_width) / total ))
+            res_chars=$(( (res * bar_width) / total ))
+            ral_chars=$(( (ral * bar_width) / total ))
+            bad_chars=$(( (bad * bar_width) / total ))
+            
+            # Ensure we fill exactly bar_width characters
+            total_chars=$((alloc_chars + idle_chars + res_chars + ral_chars + bad_chars))
+            diff=$((bar_width - total_chars))
+            
+            if [ "$diff" -ne 0 ]; then
+                # Find the largest category and adjust it
+                max_val=$alloc
+                max_cat="alloc"
+                [ "$idle" -gt "$max_val" ] && { max_val=$idle; max_cat="idle"; }
+                [ "$res" -gt "$max_val" ] && { max_val=$res; max_cat="res"; }
+                [ "$ral" -gt "$max_val" ] && { max_val=$ral; max_cat="ral"; }
+                [ "$bad" -gt "$max_val" ] && { max_val=$bad; max_cat="bad"; }
+                
+                case "$max_cat" in
+                    alloc) alloc_chars=$((alloc_chars + diff)) ;;
+                    idle) idle_chars=$((idle_chars + diff)) ;;
+                    res) res_chars=$((res_chars + diff)) ;;
+                    ral) ral_chars=$((ral_chars + diff)) ;;
+                    bad) bad_chars=$((bad_chars + diff)) ;;
+                esac
+            fi
+            
+            # Ensure no negative values
+            [ "$alloc_chars" -lt 0 ] && alloc_chars=0
+            [ "$idle_chars" -lt 0 ] && idle_chars=0
+            [ "$res_chars" -lt 0 ] && res_chars=0
+            [ "$ral_chars" -lt 0 ] && ral_chars=0
+            [ "$bad_chars" -lt 0 ] && bad_chars=0
+            
+            # Build bar using configured symbols with colors
+            bar="${bar}${COLOR_ALLOC}"
+            for ((i=0; i<alloc_chars; i++)); do bar="${bar}${BAR_ALLOC_CHAR}"; done
+            bar="${bar}${COLOR_RESET}${COLOR_IDLE}"
+            for ((i=0; i<idle_chars; i++)); do bar="${bar}${BAR_IDLE_CHAR}"; done
+            bar="${bar}${COLOR_RESET}${COLOR_RES}"
+            for ((i=0; i<res_chars; i++)); do bar="${bar}${BAR_RES_CHAR}"; done
+            bar="${bar}${COLOR_RESET}${COLOR_RAL}"
+            for ((i=0; i<ral_chars; i++)); do bar="${bar}${BAR_RAL_CHAR}"; done
+            bar="${bar}${COLOR_RESET}${COLOR_BAD}"
+            for ((i=0; i<bad_chars; i++)); do bar="${bar}${BAR_BAD_CHAR}"; done
+            bar="${bar}${COLOR_RESET}"
+        fi
+        
+        # Print partition line with dynamic column widths and colors
+        printf " %-${part_width}s ${COLOR_ALLOC}%-${use_width}d${COLOR_RESET} ${COLOR_IDLE}%-${idl_width}d${COLOR_RESET} ${COLOR_RES}%-${res_width}d${COLOR_RESET} ${COLOR_RAL}%-${ral_width}d${COLOR_RESET} ${COLOR_BAD}%-${bad_width}d${COLOR_RESET} ${COLOR_SUM}%-${sum_width}d${COLOR_RESET} [%s]\n" "$partition" "$alloc" "$idle" "$res" "$ral" "$bad" "$total" "$bar"
+    done < "$PART_STATS"
+fi
+
+echo

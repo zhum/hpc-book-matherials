@@ -4,12 +4,14 @@ Hello! If you read this book, you can find some useful additional files here. If
 
 Feel free to contribute - pull requests are welcome.
 
-- `How-to-generate-ssh-keys-putty` dir contains simply instructions for Windows users about the ssh keys generation.
-  You can use it as a base for the more comprehensive instruction.
+- `How-to-generate-ssh-keys-putty` dir contains simply instructions for Windows users about the ssh keys generation. You can use it as a base for the more comprehensive instruction
 - `bash-advanced-cheatsheet.sh` - some advanced examples of bash usage, plus a few awk/sed examples
 - `useful_bash_aliases.sh` - some aliases, useful if you work with slurm
 - `Runbook with Task Dependencies.xlsx` - example of a runbook, with automated tasks dependencies
-- `slurm-overview` - simple overview of slurm cluster state
+- `slurm-overview-v1` - simple overview of slurm cluster state (may be inaccurate)
+- `slurm-overview-v2` - improved overview of slurm cluster state, requires sinfo support for --json, and jq installed
+
+For comfortable using slurm-overview-v1/2 scripts, update partitions list in the script header.
 
 Some scripts from book:
 
