@@ -228,7 +228,7 @@ if [ -z "${PART_LIST:-}" ]; then
             break
         fi
     done
-    if [ $found != yep -o -z "${PART_LIST:-}" ]; then
+    if [ $found != yep ]; then
         readarray -t PART < <(sinfo --Format=partition -h | tr -d '* ')
     fi
     IFS="," PART_LIST="${PART[*]}"
