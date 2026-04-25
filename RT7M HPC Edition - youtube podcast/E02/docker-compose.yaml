@@ -1,0 +1,43 @@
+x-base: &base
+  build: .             # Use Dockerfile !
+  networks:
+    - cluster-net
+  privileged: true 
+  volumes:
+    - ./shared:/shared
+    - ./slurm:/etc/slurm
+    - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+  environment:
+    - SLURM_IGNORE_SYSTEMD=1
+
+services:
+  control-node:
+    <<: *base
+    container_name: control-node
+    hostname: control-node
+
+  compute-1:
+    <<: *base
+    container_name: compute-1
+    hostname: compute-1
+
+  compute-2:
+    <<: *base
+    container_name: compute-2
+    hostname: compute-2
+
+  compute-3:
+    <<: *base
+    container_name: compute-3
+    hostname: compute-3
+
+  compute-4:
+    <<: *base
+    container_name: compute-4
+    hostname: compute-4
+
+networks:
+  cluster-net:
+    driver: bridge
+
