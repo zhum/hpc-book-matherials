@@ -19,7 +19,7 @@ alias sque-prio='\squeue -S -Q -o "%6Q %.12i %.9P %.8j %.8u %.2t %.10M %19S %.6D
 #   job_state -j 1234,5678                    # one-two jobs info
 #   job_state -N node-[10-20] -S 2222-11-22   # jobs on the specified nodes, running from specified date/time
 job_state() {
-    \sacct $@ -X -p -o jobid,user,account,start,end,timelimit,state,nodelist | column -ts '|'
+    \sacct "$@" -X -p -o jobid,user,account,start,end,timelimit,state,nodelist | column -ts '|'
 }
 
 
